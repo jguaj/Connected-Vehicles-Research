@@ -1,0 +1,218 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import random
+import math
+import plotly.express as px
+
+# NOTE: ORIGINAL COLUMNS NAMES ARE: '#time', 'id', 'x[m]', 'y[m]', 'speed[m/s]', 'heading', 'acc[m/s^2]'
+# sets specific seed in order for results to be able to be replicated
+
+np.random.seed(538)
+random.seed(231)
+
+def get_colluding_node_data(file_path):
+    """
+    from the TXT file that the file path points to, this function generates and returns the complete data, the
+    dishonest data, and the honest data
+    :param file_path: requires a path to a txt file as its argument
+    :return:  complete data, dishonest data, honest data,
+    """
+    # creates dataframe that stores all of the vehicle data.
+    vehicle_df = pd.read_csv(file_path,
+                             sep='[\s]{1,}',
+                             engine='python')  # Added regex delimiter so data can be imported directly from the txt files traffic-simulation.de exports - John
+
+    # changes the names of the columns for ease of typing and readability
+    vehicle_df.columns = ['time', 'id', 'pos', 'lane', 'speed', 'heading',
+                          'acc']  # Renamed ypos to lane and xpos to pos
+
+    # maps dictionary keys(which are unique id's) to either True or False--which
+    # corresponds to whether that id's data will be honest or dishonest.
+    # True = honest data, False = dishonest data
+    id_honesty = {}
+    for cur_id in vehicle_df["id"]:
+        if cur_id not in id_honesty:
+            id_honesty[cur_id] = bool(random.getrandbits(1))
+
+    # adds a column to the dataframe that represents the honesty of data
+    vehicle_df["honesty"] = [id_honesty[i] for i in vehicle_df.id]
+
+    # creates two dataframes, one holds honest data, and the other holds
+    # dishonest data. Each vehicle either sends either honest or dishonest data
+    honest_vehicle_df = vehicle_df.loc[vehicle_df["honesty"] == True].copy()
+    dishonest_vehicle_df = vehicle_df.loc[vehicle_df["honesty"] == False].copy()
+
+    # alters the data of the dataframe whose data is supposed to be dishonest
+    dishonest_vehicle_df.loc[:, "pos"] = dishonest_vehicle_df.loc[:, "pos"].apply(
+        lambda x: x * (np.random.choice([0.90 + epsilon / 100 for epsilon in range(21)])))
+
+    # returns the complete data, the dishonest data, and the honest data in a dataframe
+    return vehicle_df, dishonest_vehicle_df, honest_vehicle_df
+
+def get_ring_position_data(vehicle_df):
+    """
+    This method takes the dataset from traffic-simulation.de ring topology as input.
+    It uses the position data, which indicates position around the circumference of the ring.
+    It will use that data to generate x and y positions along a circle
+
+    FIRST, convert between position and radians
+    We do this by identifying the maximum position in the dataset (the circumference).
+    We then divide the circumference (ex 791), by 360.
+    We can divide the positions by the resulting number, 2.1972, (known for now as F), to get degrees
+    But we then put 1 over F, so that we can multiply our positions by it to get degrees.
+    We then multiply this number by pi / 180, so that when we multiply it into our positions, we get radians instead
+    NOW, this number is called the conversion_factor, which we use to convert position (along the circumference) into radians
+
+    SECOND, use radians and radius to compute x/y positions
+    Two lists are created, one for x and y each. These will take the place of the position column in our dataframe
+    Each x coordinate is computed as radius * cos(angle_in_radians)
+    Each y coordinate is computed as radius * sin(angle_in_radians)
+    Radius is found by dividing circumference by 2*pi
+
+    THIRD, return dataframe with the position column replaced by x/y position columns
+
+    :param ring_vehicle_df: Requires ring topology dataframe as input
+    :return: The vehicle dataframe, with the 'pos' position column replaced by a column each for x/y positions, 'xpos' and 'ypos'
+    """
+
+    # CHANGE: originally, this function overrode vehicle_df because ring_topology_df was pointing to a reference
+    # of the argument(vehicle_df), not a copy. Similar to how in Java an array passed as an argument is actually the same
+    # array within the method/function but with a different reference, ring_topology_df was pointing to the same place in
+    # memory as vehicle_df. This is not good because changing ring_topology_df is the same thing as changing
+    # vehicle_df so it wont be possible to use the original vehicle_df dataframe once this function has been executed.
+    # In order to prevent this I assigned ring_topology_df to a copy of vehicle_df, Now ring_topology_df and
+    # vehicle_df are stored in different places in memory. --JOSE
+    ring_topology_df = vehicle_df.copy()
+
+    pi = 3.14159
+    circumference = ring_topology_df['pos'].max()
+    radius = circumference / (2 * pi)
+
+    # Conversion factor used to convert position into radians
+    conversion_factor = 1 / (circumference / 360) * (pi / 180)
+
+    x_positions = []
+    y_positions = []
+
+    for idx, row in ring_topology_df.iterrows():
+        # Converting the position to radians
+        pos_radians = row['pos'] * conversion_factor
+
+        # Adding a 10 unit offset between lanes
+        lane_offset = row['lane'] * 10
+
+        # Converting radians into x/y positions and appending them to corresponding lists
+        x_positions.append(round(((radius + lane_offset) * math.cos(pos_radians)), 2))
+        y_positions.append(round(((radius + lane_offset) * math.sin(pos_radians)), 2))
+
+    # Adding x/y position columns to the dataframe
+    ring_topology_df['xpos'] = x_positions
+    ring_topology_df['ypos'] = y_positions
+
+    # Dropping the original positions column from the dataframe
+    ring_topology_df.drop('pos', axis=1, inplace=True)
+
+    # Sorting the dataframe by id and then time in ascending order. This is necessary so that the animation iterates properly
+    ring_topology_df = ring_topology_df.sort_values(['id', 'time'], ascending=[True, True])
+
+    # Resetting dataframe index to account for the sort function
+    ring_topology_df.reset_index(drop=True, inplace=True)
+
+    return ring_topology_df
+
+def plot_animated_scatterplot(ring_vehicle_df):
+    """
+    :param ring_vehicle_df: In this dataframe, the position data has been replaced with circular x/y coordinates
+    :return: Method has no return. Opens animated scatter plot in preferred browser tab
+    """
+    # This is calling the scatter function from Plotly Express to define the fig variable
+    fig = px.scatter(
+        ring_vehicle_df,  # The entire dataset is passed as a parameter
+        x="xpos",  # x is defined per entries in the xpos column
+        y="ypos",  # y is defined per entries in the ypos column
+        animation_frame="time",  # Time is the metric by which the animation iterates frames
+        color="honesty",  # The nodes are denoted in color by their associated honesty boolean
+        hover_name="id",  # When you hover over the node in the animation you will see its id
+        range_x=[-200, 200],  # Dimensions of the x axis for the plot
+        range_y=[-200, 200]  # Dimensions of the y axis for the plot
+    )
+    # Rendering the established figure
+    # fig.show()
+
+    # fig.show() never worked for me. Chrome always loaded a webpage that said "This site can’t be reached". The line
+    # below works every time. I'll leave both lines here in case someone runs in to the same problem as me. --JOSE
+    fig.write_html('tmp.html', auto_open=True)
+
+def plot_honest_and_dishonest_data(dishonest_vehicle_df, honest_vehicle_df, num_vehicles=20, legend=False):
+    """
+    displays two graphs, one that shows the relationship between x position
+    and time of dishonest vehicles and another that shows the relationship between x position and
+    time of honest vehicles
+
+    :param dishonest_vehicle_df: dishonest data generates from function get_colluding_node_data
+    :param honest_vehicle_df: honest data generates from function get_colluding_node_data
+    :param num_vehicles: determines how many dishonest and honest vehicle's X position will be plotted
+    :param legend: determines whether a legend that relates line color and vehicle id will be displayed, it
+                   is recommended that legend=false when a large number of vehicles are to be displayed
+    :return: nothing, two graphs are displayed
+    """
+
+    # creates Figure and Axes object necessary for plotting
+    fig, ax1 = plt.subplots(figsize=(8, 6), dpi=100)
+
+    # plots the x position against time of the vehicle's with the dishonest data
+    [ax1.plot(dishonest_vehicle_df[dishonest_vehicle_df["id"] == i]["time"],
+              dishonest_vehicle_df[dishonest_vehicle_df["id"] == i]["pos"], label=str(i)) for i in
+     dishonest_vehicle_df["id"].unique()[:num_vehicles]]
+
+    # sets certain attributes of the plot with dishonest data
+    ax1.set_title("Relationship Between Position and Time of Dishonest Vehicles")
+    ax1.set_xlabel("Time(s)")
+    ax1.set_ylabel("Position(m)")
+
+    # places legend on the plot with the correct attributes
+    if legend == True: ax1.legend(title="Vehicle ID", fontsize='small', fancybox=True)
+
+    # makes the plot more compact
+    plt.tight_layout()
+
+    # creates Figure and Axes object necessary for plotting
+    fig, ax2 = plt.subplots(figsize=(8, 6), dpi=100)
+
+    # plots the x position against time of the vehicle's with the honest data
+    [ax2.plot(honest_vehicle_df[honest_vehicle_df["id"] == i]["time"],
+              honest_vehicle_df[honest_vehicle_df["id"] == i]["pos"], label=str(i)) for i in
+     honest_vehicle_df["id"].unique()[:num_vehicles]]
+
+    # sets certain attributes of the plot with honest data
+    ax2.set_title("Relationship Between Position and Time of Honest Vehicles")
+    ax2.set_xlabel("Time(s)")
+    ax2.set_ylabel("Position(m)")
+
+    # places legend on the plot with the correct attributes
+    if legend == True: ax2.legend(title="Vehicle ID", fontsize='small', fancybox=True)
+
+    # makes the plot more compact
+    plt.tight_layout()
+
+    # displays both plots
+    plt.show()
+
+# call to function that generates the complete vehicle data, dishonest vehicle data, and honest vehicle data based
+# off of a user-provided file path that points to a txt file
+
+# NOTE: the argument should be the file path of the txt file on your computer
+vehicle_df, dishonest_vehicle_df, honest_vehicle_df = get_colluding_node_data(
+    r"C:\Users\PACO\Downloads\road1_time60.0.txt")
+
+# call to function that returns the dataframe needed to plot the ring topology
+ring_topology_df = get_ring_position_data(vehicle_df)
+
+# call to method that plots the ring topology as an animated scatter plot
+plot_animated_scatterplot(ring_topology_df)
+
+# call to function that displays two graphs, one that shows the relationship between x position
+# and time of dishonest vehicles and another that shows the relationship between x position and
+# time of honest vehicles
+plot_honest_and_dishonest_data(dishonest_vehicle_df, honest_vehicle_df, legend=True)

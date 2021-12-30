@@ -10,8 +10,10 @@ A general overview goes as follows:
 import random
 import pandas as pd
 import numpy as np
+from pandas.core.indexing import IndexSlice
 import plotly.express as px
-import math
+from math import radians, cos, sin
+from sklearn.neighbors import BallTree
 
 np.random.seed(538)
 random.seed(231)
@@ -65,21 +67,21 @@ def convert_pos_to_xy_pos(vehicle_df):
     radius = circumference / (2 * pi)
 
     # Conversion factor used to convert position into radians
-    conversion_factor = 1 / (circumference / 360) * (pi / 180)
+    conversion_factor = 1 / (circumference / 360) # * (pi / 180)
 
     x_positions = []
     y_positions = []
 
     for idx, row in vehicle_df.iterrows():
         # Converting the position to radians
-        pos_radians = row['pos'] * conversion_factor
+        pos_radians = radians(row['pos'] * conversion_factor)
 
         # Adding a 10 unit offset between lanes
         lane_offset = row['lane'] * 10
 
         # Converting radians into x/y positions and appending them to corresponding lists
-        x_positions.append(round(((radius + lane_offset) * math.cos(pos_radians)), 2))
-        y_positions.append(round(((radius + lane_offset) * math.sin(pos_radians)), 2))
+        x_positions.append(round(((radius + lane_offset) * cos(pos_radians)), 2))
+        y_positions.append(round(((radius + lane_offset) * sin(pos_radians)), 2))
 
     # Adding x/y position columns to the dataframe
     vehicle_df['xpos'] = x_positions
@@ -87,13 +89,6 @@ def convert_pos_to_xy_pos(vehicle_df):
 
     # Dropping the original positions column from the dataframe
     #vehicle_df.drop('pos', axis=1, inplace=True)
-
-
-    # Sorting the dataframe by id and then time in ascending order. This is necessary so that the animation iterates properly
-    vehicle_df.sort_values(['id', 'time'], ascending=[True, True], inplace=True)
-    #vehicle_df.sort_values('id', ascending=True)
-    # Resetting dataframe index to account for the sort function
-    vehicle_df.reset_index(drop=True, inplace=True)
 
 def assign_honesty_booleans(vehicle_df, ratio_of_honest_to_dishonest_nodes):
     ratio = ratio_of_honest_to_dishonest_nodes
@@ -110,6 +105,12 @@ def plot_animated_scatterplot(vehicle_df):
     :param ring_vehicle_df: In this dataframe, the position data has been replaced with circular x/y coordinates
     :return: Method has no return. Opens animated scatter plot in preferred browser tab
     """
+
+     # Sorting the dataframe by id and then time in ascending order. This is necessary so that the animation iterates properly
+    vehicle_df.sort_values(['id', 'time'], ascending=[True, True], inplace=True)
+    # Resetting dataframe index to account for the sort function
+    vehicle_df.reset_index(drop=True, inplace=True)
+
     # This is calling the scatter function from Plotly Express to define the fig variable
     fig = px.scatter(
         vehicle_df,  # The entire dataset is passed as a parameter
@@ -124,7 +125,44 @@ def plot_animated_scatterplot(vehicle_df):
     # Rendering the established figure
     fig.show()
 
+def calculate_nearest_neighbors(vehicle_df, k_nearest_neighbors):
+    """
+    For each time in simulation timespan
+        For each unique vehicle_id
+            Computes its k nearest neighbors using BallTree algorithm
+
+    vehicle_df is left with k added columns containing the nearest neighbors for every vehicle at every point in time    
+    """
+
+    for NN in range(k_nearest_neighbors):
+        vehicle_df[f'NN_{NN + 1}'] = ''
+
+    maxtime, mintime = int(vehicle_df['time'].max()), int(vehicle_df['time'].min())
+
+    for time in range(mintime, maxtime + 1):
+        XY_positions = vehicle_df[vehicle_df['time'] == time][['xpos', 'ypos','id']]
+        XY_positions.reset_index(drop=True, inplace=True)
+        
+        for i in range(len(XY_positions)): 
+
+            TEMP = XY_positions['id'] 
+            XY_positions.drop('id', axis=1, inplace=True) 
+            
+            tree = BallTree(XY_positions, leaf_size=2)
+            distances, indices = tree.query(XY_positions[i:i+1], k=k_nearest_neighbors + 1)
+            indices = np.delete(indices[0], 0) # Removing the first nearest neighbor from the indices because the closest node to any node will be the node itself
+            
+            XY_positions['id'] = TEMP 
+            
+            cur_id = XY_positions.loc[i, 'id']
+            cur_df_index = vehicle_df.loc[(vehicle_df['time']==time) & (vehicle_df['id'] == cur_id)].index.values[0]
+            for NN in range (k_nearest_neighbors):
+                cur_col_label = 'NN_%d' % (NN + 1) 
+                vehicle_df.at[cur_df_index, cur_col_label] = XY_positions.loc[indices[NN], 'id']
+
 vehicle_df = import_from_txt(r"C:\Users\johnw\Downloads\road1_time351.2.txt")
-assign_honesty_booleans(vehicle_df, ratio_of_honest_to_dishonest_nodes=50)
+assign_honesty_booleans(vehicle_df, ratio_of_honest_to_dishonest_nodes=75)
 convert_pos_to_xy_pos(vehicle_df)
-plot_animated_scatterplot(vehicle_df) 
+#plot_animated_scatterplot(vehicle_df) 
+calculate_nearest_neighbors(vehicle_df, k_nearest_neighbors=3)
+print(vehicle_df)
